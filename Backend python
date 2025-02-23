@@ -1,0 +1,52 @@
+from flask import Flask, request, jsonify, render_template
+from flask_sqlalchemy import SQLAlchemy
+from azure.storage.blob import BlobServiceClient
+import os
+
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///patients.db'
+db = SQLAlchemy(app)
+
+# Azure Blob Storage Configuration
+AZURE_CONNECTION_STRING = "your_azure_connection_string"
+CONTAINER_NAME = "patient-records"
+blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+
+class Patient(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    age = db.Column(db.Integer, nullable=False)
+    symptoms = db.Column(db.String(255), nullable=False)
+    prescription = db.Column(db.String(255), nullable=True)
+    record_url = db.Column(db.String(255), nullable=True)
+
+@app.route('/add_patient', methods=['POST'])
+def add_patient():
+    data = request.json
+    new_patient = Patient(name=data['name'], age=data['age'], symptoms=data['symptoms'])
+    db.session.add(new_patient)
+    db.session.commit()
+    return jsonify({'message': 'Patient added successfully'}), 201
+
+@app.route('/upload_record/<int:patient_id>', methods=['POST'])
+def upload_record(patient_id):
+    patient = Patient.query.get(patient_id)
+    if not patient:
+        return jsonify({'error': 'Patient not found'}), 404
+    
+    file = request.files['file']
+    blob_client = container_client.get_blob_client(file.filename)
+    blob_client.upload_blob(file, overwrite=True)
+    patient.record_url = blob_client.url
+    db.session.commit()
+    return jsonify({'message': 'Record uploaded successfully', 'url': patient.record_url})
+
+@app.route('/get_patients', methods=['GET'])
+def get_patients():
+    patients = Patient.query.all()
+    return jsonify([{'id': p.id, 'name': p.name, 'age': p.age, 'symptoms': p.symptoms, 'prescription': p.prescription, 'record_url': p.record_url} for p in patients])
+
+if __name__ == '__main__':
+    db.create_all()
+    app.run(debug=True)
